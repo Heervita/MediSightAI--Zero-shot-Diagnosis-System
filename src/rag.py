@@ -40,19 +40,28 @@ class RAGEngine:
     def search_similar(self, query_vector, n_results=3):
         """
         Finds the top N most similar past cases.
+        Returns a list of dicts: [{'text': description, 'file': filename}, ...]
         """
-        # Ensure vector is a list
         if hasattr(query_vector, 'tolist'):
             query_vector = query_vector.tolist()[0]
 
-        # Check if DB is empty
         if self.collection.count() == 0:
-            return ["Database is empty. Add trusted cases to data/reference_images first."]
+            return [] # Return empty list if DB is empty
 
         results = self.collection.query(
             query_embeddings=[query_vector],
             n_results=n_results
         )
         
-        # Extract just the documents (descriptions)
-        return results['documents'][0]
+        # Combine descriptions with filenames
+        documents = results['documents'][0]
+        metadatas = results['metadatas'][0]
+        
+        final_results = []
+        for doc, meta in zip(documents, metadatas):
+            final_results.append({
+                "text": doc,
+                "filename": meta.get("filename", "")
+            })
+            
+        return final_results

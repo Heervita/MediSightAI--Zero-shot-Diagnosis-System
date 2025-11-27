@@ -2,6 +2,8 @@ import streamlit as st
 import time
 from src import MedicalModel, RAGEngine, process_image
 from src.utils import get_reference_images
+from src.report_generator import create_pdf
+import os
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -104,73 +106,202 @@ with col1:
     uploaded_file = st.file_uploader("Upload X-Ray / MRI", type=["jpg", "png", "jpeg"])
 
     if uploaded_file:
-        # Display the uploaded image
+        # Process the image immediately so we can use it
         patient_image = process_image(uploaded_file)
         if patient_image:
             st.image(patient_image, caption="Current Patient Scan", use_column_width=True)
 
-            # Run Analysis Button
-            analyze_btn = st.button("🔍 Run Diagnostic Analysis", type="primary")
+            # --- SESSION STATE LOGIC START ---
+            # If the user uploaded a NEW file, clear the old memory
+            if "last_uploaded" not in st.session_state or st.session_state.last_uploaded != uploaded_file.name:
+                st.session_state.last_uploaded = uploaded_file.name
+                st.session_state.analysis_done = False
+                st.session_state.predictions = None
+                st.session_state.similar_cases = None
+
+            # The Analysis Button
+            if st.button("🔍 Run Diagnostic Analysis", type="primary"):
+                with st.spinner("Analyzing visual patterns..."):
+                    # 1. Run Zero-Shot
+                    patient_vector = model.encode_image(patient_image)
+                    formatted_conditions = [f"A chest X-ray showing {c}" for c in condition_list]
+                    text_vectors = model.encode_text(formatted_conditions)
+                    probs = model.compute_similarity(patient_vector, text_vectors)
+                    
+                    results = list(zip(condition_list, probs))
+                    results.sort(key=lambda x: x[1], reverse=True)
+
+
+                    # 2. Run RAG (Now returns objects, not just strings)
+                    rag_results = rag.search_similar(patient_vector, n_results=3)
+
+                    # 3. SAVE TO MEMORY
+                    st.session_state.predictions = results
+                    st.session_state.similar_cases = rag_results # Save the whole dict
+                    st.session_state.analysis_done = True
+            # --- SESSION STATE LOGIC END ---
 
 # --- COLUMN 2: RESULTS ---
 with col2:
     st.header("2. AI Findings")
     
-    if uploaded_file and analyze_btn:
+    # Only show results if we have them in memory
+    if uploaded_file and st.session_state.get("analysis_done"):
+        
+        # Retrieve data from memory
+        results = st.session_state.predictions
+        similar_cases = st.session_state.similar_cases
+
         # A. ZERO-SHOT DIAGNOSIS
         st.subheader("📊 Probability Analysis (Zero-Shot)")
         
-        with st.spinner("Analyzing visual patterns..."):
-            # 1. Convert Patient Image to Vector
-            patient_vector = model.encode_image(patient_image)
-            
-            # --- FIX: BETTER PROMPT ENGINEERING ---
-            # Instead of just "Pneumonia", we send "A chest X-ray showing Pneumonia"
-            # This helps the model understand the context better.
-            
-            formatted_conditions = [f"A chest X-ray showing {c}" for c in condition_list]
-            
-            # 2. Encode the formatted text
-            text_vectors = model.encode_text(formatted_conditions)
-            
-            # 3. Compare
-            probs = model.compute_similarity(patient_vector, text_vectors)
-            
-            # Display Results
-            results = list(zip(condition_list, probs))
-            results.sort(key=lambda x: x[1], reverse=True)
-            
-            # 4. Smart Display Logic
-            top_match = results[0][0]
-            top_score = results[0][1]
-            
-            if top_score < 0.2:
-                st.warning("⚠️ Low Confidence: The model is unsure. Rely on RAG results.")
-            
-            for condition, score in results:
-                # If the score is tiny, don't show it to avoid confusion
-                if score > 0.01: 
-                    st.markdown(f"**{condition}**")
-                    
-                    # Green bar for Healthy, Red for Disease
-                    if "Healthy" in condition or "No Findings" in condition:
-                        st.progress(float(score)) # Streamlit default is blue, good enough
-                    else:
-                        st.progress(float(score))
-                        
-                    st.caption(f"Confidence: {score*100:.2f}%")
+        top_match = results[0][0]
+        top_score = results[0][1]
+        
+        if top_score < 0.2:
+            st.warning("⚠️ Low Confidence: The model is unsure. Rely on RAG results.")
+        
+        for condition, score in results:
+            if score > 0.01: 
+                st.markdown(f"**{condition}**")
+                if "Healthy" in condition or "No Findings" in condition:
+                    st.progress(float(score))
+                else:
+                    st.progress(float(score))
+                st.caption(f"Confidence: {score*100:.2f}%")
 
         st.divider()
 
         # B. RAG RETRIEVAL (EVIDENCE)
         st.subheader("📚 Similar Historical Cases (RAG)")
         
-        with st.spinner("Searching hospital records..."):
-            # Search the database using the patient's vector
-            similar_cases = rag.search_similar(patient_vector, n_results=3)
+        if not similar_cases:
+            st.warning("⚠️ No historical matches found.")
+        else:
+            for i, case in enumerate(similar_cases):
+                # case is now a Dict: {'text': 'Viral Pneumonia', 'filename': 'person1.jpg'}
+                st.info(f"**Match #{i+1}:** {case['text']}")
+                # Optional: Show the similar image in the app too!
+                img_path = os.path.join("data", "reference_images", case['filename'])
+                if os.path.exists(img_path):
+                    st.image(img_path, width=200)
+
+        # C. PDF REPORT GENERATION (Direct Download)
+        st.divider()
+        st.subheader("📄 Medical Report")
+        
+        # We generate the PDF silently in the background right now
+        # This is fast enough that the user won't notice a delay
+        with st.spinner("Preparing download..."):
+            pdf_bytes = create_pdf(patient_image, results, similar_cases)
+        
+        # Direct Download Button
+        st.download_button(
+            label="⬇️ Download Patient Report (PDF)",
+            data=pdf_bytes,
+            file_name="medisight_report.pdf",
+            mime="application/pdf",
+            type="primary"  # Makes the button stand out
+        )
+
+# # --- MAIN INTERFACE ---
+# st.title("🩺 MediSight: Zero-Shot Diagnostic Assistant")
+# st.markdown("Upload a medical scan to analyze it against **new** or **rare** conditions instantly.")
+
+# col1, col2 = st.columns([1, 1])
+
+# # --- COLUMN 1: INPUT & ANALYSIS ---
+# with col1:
+#     st.header("1. Patient Scan")
+#     uploaded_file = st.file_uploader("Upload X-Ray / MRI", type=["jpg", "png", "jpeg"])
+
+#     if uploaded_file:
+#         # Display the uploaded image
+#         patient_image = process_image(uploaded_file)
+#         if patient_image:
+#             st.image(patient_image, caption="Current Patient Scan", use_column_width=True)
+
+#             # Run Analysis Button
+#             analyze_btn = st.button("🔍 Run Diagnostic Analysis", type="primary")
+
+# # --- COLUMN 2: RESULTS ---
+# with col2:
+#     st.header("2. AI Findings")
+    
+#     if uploaded_file and analyze_btn:
+#         # A. ZERO-SHOT DIAGNOSIS
+#         st.subheader("📊 Probability Analysis (Zero-Shot)")
+        
+#         with st.spinner("Analyzing visual patterns..."):
+#             # 1. Convert Patient Image to Vector
+#             patient_vector = model.encode_image(patient_image)
             
-            if not similar_cases or similar_cases[0] == "Database is empty. Add trusted cases to data/reference_images first.":
-                st.warning("⚠️ No historical matches found. (Did you click 'Update Medical Database'?)")
-            else:
-                for i, case_desc in enumerate(similar_cases):
-                    st.info(f"**Case Match #{i+1}:** {case_desc}")
+#             # --- FIX: BETTER PROMPT ENGINEERING ---
+#             # Instead of just "Pneumonia", we send "A chest X-ray showing Pneumonia"
+#             # This helps the model understand the context better.
+            
+#             formatted_conditions = [f"A chest X-ray showing {c}" for c in condition_list]
+            
+#             # 2. Encode the formatted text
+#             text_vectors = model.encode_text(formatted_conditions)
+            
+#             # 3. Compare
+#             probs = model.compute_similarity(patient_vector, text_vectors)
+            
+#             # Display Results
+#             results = list(zip(condition_list, probs))
+#             results.sort(key=lambda x: x[1], reverse=True)
+            
+#             # 4. Smart Display Logic
+#             top_match = results[0][0]
+#             top_score = results[0][1]
+            
+#             if top_score < 0.2:
+#                 st.warning("⚠️ Low Confidence: The model is unsure. Rely on RAG results.")
+            
+#             for condition, score in results:
+#                 # If the score is tiny, don't show it to avoid confusion
+#                 if score > 0.01: 
+#                     st.markdown(f"**{condition}**")
+                    
+#                     # Green bar for Healthy, Red for Disease
+#                     if "Healthy" in condition or "No Findings" in condition:
+#                         st.progress(float(score)) # Streamlit default is blue, good enough
+#                     else:
+#                         st.progress(float(score))
+                        
+#                     st.caption(f"Confidence: {score*100:.2f}%")
+
+#         st.divider()
+
+#         # B. RAG RETRIEVAL (EVIDENCE)
+#         st.subheader("📚 Similar Historical Cases (RAG)")
+        
+#         with st.spinner("Searching hospital records..."):
+#             # Search the database using the patient's vector
+#             similar_cases = rag.search_similar(patient_vector, n_results=3)
+            
+#             if not similar_cases or similar_cases[0] == "Database is empty. Add trusted cases to data/reference_images first.":
+#                 st.warning("⚠️ No historical matches found. (Did you click 'Update Medical Database'?)")
+#             else:
+#                 for i, case_desc in enumerate(similar_cases):
+#                     st.info(f"**Case Match #{i+1}:** {case_desc}")
+
+#         st.divider()
+#         st.subheader("📄 Report Generation")
+        
+#         if st.button("Generate PDF Report"):
+#             with st.spinner("Compiling medical report..."):
+#                 # 1. Prepare data for the PDF
+#                 # (We already have 'patient_image' and 'results' from earlier in the code)
+                
+#                 # 2. Generate PDF bytes
+#                 pdf_bytes = create_pdf(patient_image, results, similar_cases)
+                
+#                 # 3. Create a Download Button
+#                 st.download_button(
+#                     label="⬇️ Download Patient Report (PDF)",
+#                     data=pdf_bytes,
+#                     file_name="medisight_report.pdf",
+#                     mime="application/pdf"
+#                 )
