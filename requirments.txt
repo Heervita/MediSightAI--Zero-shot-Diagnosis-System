@@ -5,3 +5,4 @@ transformers
 chromadb
 pillow
 numpy
+fpdf2
