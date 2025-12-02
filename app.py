@@ -27,7 +27,7 @@ with st.spinner("Booting up MediSight AI Systems... (Approx. 20s)"):
 
 # --- SIDEBAR: CONTROLS & DATABASE ---
 with st.sidebar:
-    st.title("⚙️ Diagnostic Panel")
+    st.title("Diagnostic Panel")
     
     st.divider()
     st.subheader("1. Define Conditions")
@@ -43,7 +43,7 @@ with st.sidebar:
 
     # ... inside your sidebar code ...
 
-    if st.button("🔄 Update Medical Database"):
+    if st.button("Update Medical Database"):
         count = 0
         progress_bar = st.progress(0)
         
@@ -120,7 +120,7 @@ with col1:
                 st.session_state.similar_cases = None
 
             # The Analysis Button
-            if st.button("🔍 Run Diagnostic Analysis", type="primary"):
+            if st.button("Run Diagnostic Analysis", type="primary"):
                 with st.spinner("Analyzing visual patterns..."):
                     # 1. Run Zero-Shot
                     patient_vector = model.encode_image(patient_image)
@@ -159,7 +159,7 @@ with col2:
         top_score = results[0][1]
         
         if top_score < 0.2:
-            st.warning("⚠️ Low Confidence: The model is unsure. Rely on RAG results.")
+            st.warning("Low Confidence: The model is unsure. Rely on RAG results.")
         
         for condition, score in results:
             if score > 0.01: 

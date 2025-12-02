@@ -1,7 +1,7 @@
 # src/model_loader.py
 import torch
 import open_clip
-from PIL import Image
+from PIL import Image                                                   
 
 class MedicalModel:
     def __init__(self):
